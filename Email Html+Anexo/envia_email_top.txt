@@ -1,0 +1,236 @@
+* ----------------------------------------------------------------------
+* Empresa..:
+* ID.......: -
+* Tipo.....: Função
+* Módulo...: SD
+* Transação: -
+* Descrição: Desenvolvimento Inicial - Email Cobrança
+* Autor....: T1562
+* Data.....: 23/10/19
+* User Exit:
+*                            [HISTÓRICO]
+* ========= ======== ========== ========================================
+*   Data      Autor    Request   Descrição
+* ========= ======== ========== ========================================
+* 23/10/19   T1562   DEVK969524 Desenvolvimento Iniciar - Email Cobrança
+* ========= ======== ========== ========================================
+*
+* ========= ======== ========== ========================================
+*
+* ========= ======== ========== ========================================
+*
+* ---------------------------------------------------------------------*
+FUNCTION-POOL z_gsd_email_cobranca.         "MESSAGE-ID ..
+
+* INCLUDE LZ_GSD_EMAIL_COBRANCAD...          " Local class definition
+
+*---------------------------------------------------------------------*
+* TYPEs                                                               *
+*---------------------------------------------------------------------*
+TYPES: BEGIN OF y_email_body.
+        INCLUDE TYPE soli.
+TYPES: END OF y_email_body.
+
+TYPES: BEGIN OF y_tradede_log,
+         mandt      TYPE zsdt_tradede_log-mandt,
+         vbeln      TYPE zsdt_tradede_log-vbeln,
+         zdata_exec TYPE zsdt_tradede_log-zdata_exec,
+         zhora_exec TYPE zsdt_tradede_log-zhora_exec,
+         znr_msg    TYPE zsdt_tradede_log-znr_msg,
+         zmensagem  TYPE zsdt_tradede_log-zmensagem,
+       END OF y_tradede_log.
+
+TYPES: BEGIN OF y_toa01,
+         sap_object TYPE toa01-sap_object,
+         object_id  TYPE toa01-object_id,
+         archiv_id  TYPE toa01-archiv_id,
+         arc_doc_id TYPE toa01-arc_doc_id,
+       END OF y_toa01,
+
+       BEGIN OF y_toaat,
+         arc_doc_id TYPE toaat-arc_doc_id,
+         filename   TYPE toaat-filename,
+       END OF y_toaat.
+
+TYPES: BEGIN OF y_anexo,
+         type    TYPE soodk-objtp,
+         subject TYPE sood-objdes,
+         content TYPE solix_tab,
+       END OF y_anexo.
+
+*---------------------------------------------------------------------*
+* Tabelas Internas.                                                   *
+*---------------------------------------------------------------------*
+DATA: BEGIN OF t_data OCCURS 0,
+        line(5000),
+      END OF t_data.
+
+DATA:
+  t_cobr_aux    TYPE            zstsd_cobrancas,
+  t_cobr_ord    TYPE            zstsd_cobrancas,
+  t_cabec       TYPE TABLE OF   zstsd_cabecfatura_us,
+  t_item        TYPE            zstsd_tableitem_faturaus,
+  t_vbrk        TYPE vbrk       OCCURS 0 WITH HEADER LINE,
+  t_tradede_log TYPE            TABLE OF y_tradede_log,
+  t_toa01       TYPE            TABLE OF y_toa01,
+  t_toaat       TYPE            TABLE OF y_toaat,
+  t_lines       TYPE            TABLE OF tline,
+  t_email_body  TYPE            TABLE OF y_email_body,
+  t_tline       TYPE            TABLE OF tline WITH HEADER LINE,
+  t_otf         TYPE itcoo      OCCURS 0 WITH HEADER LINE,
+  t_vbpa        TYPE vbpa       OCCURS 0 WITH HEADER LINE,
+  t_kna1        TYPE kna1       OCCURS 0 WITH HEADER LINE,
+  t_vbrp        TYPE vbrp       OCCURS 0 WITH HEADER LINE,
+  t_adr6        TYPE adr6       OCCURS 0 WITH HEADER LINE,
+  t_adrt        TYPE adrt       OCCURS 0 WITH HEADER LINE,
+  t_stvarv      TYPE tvarvc     OCCURS 0 WITH HEADER LINE,
+  t_record      TYPE soli_tab,
+  t_objpack     LIKE sopcklsti1 OCCURS 0 WITH HEADER LINE,
+  t_objtxt      TYPE soli_tab,
+  t_objbin      TYPE soli_tab,
+  t_objbinex    LIKE solisti1   OCCURS 0 WITH HEADER LINE,
+  t_reclist     LIKE somlreci1  OCCURS 0 WITH HEADER LINE,
+  t_anexo       TYPE solix_tab,
+  t_anexo_xls   TYPE solix_tab,
+  t_anexo_aux TYPE TABLE OF y_anexo.
+
+*---------------------------------------------------------------------*
+* Variáveis Globais                                                   *
+*---------------------------------------------------------------------*
+DATA:
+  l_email       TYPE REF TO cl_document_bcs,
+  v_return_code TYPE syst-subrc,
+  v_form_name   TYPE rs38l_fnam,
+  v_len_in      LIKE sood-objlen,
+  v_len_out     LIKE sood-objlen,
+  v_len_outn    TYPE i,
+  v_lines_txt   TYPE i,
+  v_lines_bin   TYPE i,
+  v_lines_bin2  TYPE i,
+  v_email       TYPE adr6-smtp_addr,
+  v_sender      TYPE so_rec_ext,
+  v_lines       TYPE n,
+  v_cont        TYPE n,
+  v_field(50)   TYPE c,
+  v_total       TYPE netwr_fp,
+  v_utxj        TYPE kwert,
+  v_zr00        TYPE kwert,
+  v_jrxx        TYPE kwert,
+  v_langu       TYPE thead-tdspras,
+  v_name        TYPE thead-tdname,
+  v_delimiter   TYPE c VALUE '1',
+  v_ordem       TYPE vbak-vbeln,
+  v_path        TYPE rvari_val_255,
+  v_result_file TYPE rvari_val_255,
+  v_file_error  TYPE i,
+  v_file_found  TYPE i,
+  v_objkey      TYPE na_objkey,
+  v_n           TYPE i VALUE 1,
+  v_controla    TYPE i,
+  v_envia_email TYPE xflag,
+  v_lines_t     TYPE i,
+  v_tabix       TYPE sy-tabix,
+  v_enviar      TYPE xflag.
+*---------------------------------------------------------------------*
+* Estruturas                                                          *
+*---------------------------------------------------------------------*
+DATA:
+  w_ctrlop      TYPE ssfctrlop,
+  w_compop      TYPE ssfcompop,
+  w_return      TYPE ssfcrescl,
+  w_doc_chng    TYPE sodocchgi1,
+  w_data        TYPE sodocchgi1,
+  w_buffer      TYPE string, "To convert from 132 to 255
+  w_vbrk        TYPE vbrk,
+  w_bukrs       TYPE t001,
+  w_t001w       TYPE t001w,
+  w_adrc        TYPE adrc,
+  w_adr6        TYPE adr6,
+  w_kna1        TYPE kna1,
+  w_cabec       TYPE zstsd_cabecfatura_us,
+  w_item        TYPE zstsd_itemfatura_us,
+  w_trtext      TYPE trtext,
+  w_tcurc       TYPE tcurc,
+  w_varv        TYPE tvarvc,
+  w_email_body  TYPE y_email_body,
+  w_tradede_log TYPE y_tradede_log,
+  w_buffer2     TYPE xstring,
+  w_record      LIKE LINE OF t_record,
+  w_objbin      LIKE LINE OF t_objbin,
+  w_objtxt      LIKE LINE OF t_objtxt,
+  w_retorno     TYPE bapiret2,
+  w_anexo_aux   TYPE y_anexo.
+
+*---------------------------------------------------------------------*
+* Ranges                                                              *
+*---------------------------------------------------------------------*
+RANGES:
+  r_parvw        FOR vbpa-parvw                                           ,
+  r_kschl        FOR konv-kschl                                           ,
+  r_tvarvc       FOR tvarvc-name                                           .
+*---------------------------------------------------------------------*
+* Constantes.                                                         *
+*---------------------------------------------------------------------*
+CONSTANTS:
+  c_x             TYPE c                 VALUE 'X',
+  c_u             TYPE c                 VALUE 'U',
+  c_002           TYPE thead-tdid        VALUE '0002',
+  c_0001          TYPE thead-tdid        VALUE '0001',
+  c_mvke          TYPE thead-tdobject    VALUE 'MVKE',
+  c_formane       TYPE tdsfname          VALUE 'ZXPIFSD0001_FATURA_US',
+  c_print(7)      TYPE c                 VALUE 'PRINTER',
+  c_disp(4)       TYPE c                 VALUE 'LOCL',
+  c_i             TYPE c                 VALUE 'I',
+  c_eq(2)         TYPE c                 VALUE 'EQ',
+  c_zp            TYPE parvw             VALUE 'AG',
+  c_rg            TYPE parvw             VALUE 'RG',
+  c_f             TYPE c                 VALUE 'F',
+  c_email         TYPE tvarvc-name       VALUE 'ZSD_EMAIL_INVOICE_XPUS',
+  c_produto       TYPE tvarvc-name       VALUE 'ZSD_EMAIL_PRODUTO_XPUS',
+  c_vbbk          TYPE thead-tdobject    VALUE 'VBBK',
+  c_fname         TYPE fileintern        VALUE 'ICM_FILE_PATH_NAME',
+  c_ndf           TYPE char10            VALUE '_NDF.XLS',
+  c_irs           TYPE char10            VALUE '_IRS.XLS',
+  c_ndo           TYPE char10            VALUE '_NDO.XLS',
+  c_tiie          TYPE char10            VALUE '_TIIE.XLS',
+  c_xccy          TYPE char10            VALUE '_XCCY.XLS',
+  c_fwd           TYPE char10            VALUE '_FWD.XLS',
+  c_reg           TYPE char10            VALUE '_REG.XLS',
+  c_equ           TYPE char10            VALUE '_EQU.XLS',
+  c_opt           TYPE char10            VALUE '_OPT.XLS',
+  c_eqd           TYPE char10            VALUE '_EQD.XLS',
+  c_stn           TYPE char10            VALUE '_STN.XLS',
+  c_dir           TYPE rvari_vnam        VALUE 'ZSD_DETOPER_DIR',
+  c_branco(8)     TYPE c                 VALUE '********',
+  c_langu         TYPE syst-langu        VALUE 'EN',
+  c_disclaimer    TYPE tdobname          VALUE 'ZTEXT_WF_DISCLAIMER',
+  c_aviso_legal   TYPE tdobname          VALUE 'ZTEXT_WF_AVISO_LEGAL',
+  c_id_so10       TYPE thead-tdid        VALUE 'ST',
+  c_objeto_so10   TYPE thead-tdobject    VALUE 'TEXT',
+  c_assunto       TYPE so_obj_des        VALUE 'Aging Balance from XP Securities LLC',
+  c_msg_e_1       TYPE string            VALUE 'Para o Doc. Faturamento:',
+  c_msg_e_xls     TYPE string            VALUE 'Não foi possível montar Arquivo XLS.',
+  c_msg_e_pdf     TYPE string            VALUE 'Não foi possível montar Arquivo PDF.',
+  c_msg_e_stvarv  TYPE string            VALUE 'não está cadastrado na STVARV',
+  c_msg_e_email   TYPE string            VALUE 'endereço de e-mail está incorreto.',
+  c_msg_e_cli     TYPE string            VALUE 'o cliente está incorreto.',
+  c_msg_e_anexo   TYPE string            VALUE 'não foi enviado email por falta de anexo',
+  c_msg_e_anexo2  TYPE string            VALUE 'anteriormente, portanto não consegue enviar na cobrança também.',
+  c_pdf           TYPE soodk-objtp       VALUE 'PDF',
+  c_xls           TYPE soodk-objtp       VALUE 'XLS',
+  c_subject       TYPE sood-objdes       VALUE 'Invoice',
+  c_separator     TYPE char01            VALUE '/',
+  c_p             TYPE char03            VALUE '<p>',
+  c_fechar_p      TYPE char04            VALUE '</p>',
+  c_br            TYPE char04            VALUE '<br>',
+  c_head          TYPE char6             VALUE '<head>',
+  c_fechar_head   TYPE char07            VALUE '</head>',
+  c_body          TYPE char6             VALUE '<body>',
+  c_fechar_body   TYPE char07            VALUE '</body>',
+  c_fechar_td     TYPE char05            VALUE '</td>',
+  c_fechar_tr     TYPE char05            VALUE '</tr>',
+  c_tr            TYPE char04            VALUE '<tr>',
+  c_fechar_table  TYPE char8             VALUE '</table>',
+  c_html          TYPE so_obj_tp         VALUE 'HTM',
+  c_lenght        TYPE so_obj_len        VALUE '1000',
+  c_import        TYPE bcs_docimp        VALUE '1'.

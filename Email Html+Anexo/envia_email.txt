@@ -1,0 +1,1098 @@
+* ----------------------------------------------------------------------
+* Empresa..:
+* ID.......: -
+* Tipo.....: Função
+* Módulo...: SD
+* Transação: -
+* Descrição: Desenvolvimento Inicial - Email Cobrança
+* Autor....: T1562
+* Data.....: 23/10/19
+* User Exit:
+*                            [HISTÓRICO]
+* ========= ======== ========== ========================================
+*   Data      Autor    Request   Descrição
+* ========= ======== ========== ========================================
+* 23/10/19   T1562   DEVK969524 Desenvolvimento Iniciar - Email Cobrança
+* ========= ======== ========== ========================================
+*
+* ========= ======== ========== ========================================
+*
+* ========= ======== ========== ========================================
+*
+* ---------------------------------------------------------------------*
+FUNCTION z_fsd_email_cobranca.
+*"----------------------------------------------------------------------
+*"*"Interface local:
+*"  IMPORTING
+*"     VALUE(T_COBR) TYPE  ZSTSD_COBRANCAS
+*"     VALUE(I_ERDAT) TYPE  DATS OPTIONAL
+*"     VALUE(I_ERDAT_FIM) TYPE  DATS OPTIONAL
+*"  TABLES
+*"      T_RETURN STRUCTURE  BAPIRET2
+*"----------------------------------------------------------------------
+
+  DATA: t_item      TYPE zstsd_tableitem_faturaus,
+        l_addr      TYPE adr6-smtp_addr,
+        l_recipient TYPE REF TO if_recipient_bcs,
+        l_document  TYPE REF TO cl_bcs,
+        l_result    TYPE os_boolean,
+        l_data_i    TYPE char10,
+        l_data_f    TYPE char10.
+
+  CLEAR: v_envia_email, v_controla, v_tabix, v_lines_t, v_enviar, w_anexo_aux.
+
+  FREE: t_return[], t_cobr_ord[], t_cobr_aux[], t_anexo_aux[].
+
+  IF NOT t_cobr[] IS INITIAL.
+
+    PERFORM f_limpa_dados.
+
+    l_data_i = i_erdat.
+    l_data_f = i_erdat_fim.
+
+    CONCATENATE l_data_i+4(2) "MM
+                l_data_i+6(2) "DD
+                l_data_i(4) INTO l_data_i SEPARATED BY c_separator.
+
+    CONCATENATE l_data_f+4(2) "MM
+                l_data_f+6(2) "DD
+                l_data_f(4) INTO l_data_f SEPARATED BY c_separator.
+*---------------------------------------------------------------------*
+* Entradas  .                                                         *
+*---------------------------------------------------------------------*
+    t_cobr_aux[] = t_cobr[].
+    t_cobr_ord[] = t_cobr[].
+
+    r_parvw-sign = c_i.
+    r_parvw-option = c_eq.
+    r_parvw-low    = c_zp.
+    APPEND r_parvw.
+    r_parvw-low    = c_rg.
+    APPEND r_parvw.
+    CLEAR r_parvw.
+
+*---------------------------------------------------------------------*
+* Seleciona Dados.                                                    *
+*---------------------------------------------------------------------*
+    CLEAR l_email.
+
+    CLEAR: t_vbrk[], t_vbrk.
+    SELECT *
+    FROM vbrk CLIENT SPECIFIED
+    INTO TABLE t_vbrk
+    FOR ALL ENTRIES IN t_cobr
+    WHERE mandt EQ syst-mandt
+      AND vbeln EQ t_cobr-vbeln_p.
+
+    CHECK syst-subrc IS INITIAL.
+
+    CLEAR: t_vbpa, t_vbpa[].
+    SELECT * INTO TABLE t_vbpa
+      FROM vbpa CLIENT SPECIFIED
+      FOR ALL ENTRIES IN t_vbrk
+      WHERE mandt EQ syst-mandt
+        AND vbeln EQ t_vbrk-vbeln
+        AND parvw IN r_parvw.
+
+    "Gera OTF para gerar o PDF
+    w_ctrlop-getotf    = c_x.
+    "Dispositivo de impressão
+    w_ctrlop-device    = c_print.
+    "Desativa  visualização
+    w_ctrlop-preview   = ''.
+    "Desativa tela de impressora
+    w_ctrlop-no_dialog = c_x.
+    "Impressora
+    w_compop-tddest    = c_disp.
+    "Gera ID de spool
+    w_compop-tdnewid   = c_x.
+    "Não faz saida imediata.
+    w_compop-tdimmed   = space.
+
+*---------------------------------------------------------------------*
+* Arquivos Excel                                                      *
+*---------------------------------------------------------------------*
+    DESCRIBE TABLE t_vbrk LINES v_lines_t.
+
+    SORT: t_cobr_ord BY vbeln_p,
+          t_cobr_aux BY vbeln_p.
+
+    CLEAR v_objkey.
+    LOOP AT t_vbrk
+       INTO w_vbrk.
+
+      FREE: t_record, t_objbin,t_anexo, t_anexo_xls, t_toaat, t_toa01.
+
+      CLEAR: t_record[], t_objbin[].
+
+      v_tabix = sy-tabix.
+
+      CLEAR w_tradede_log.
+      w_tradede_log-mandt      = sy-mandt.
+      w_tradede_log-vbeln      = w_vbrk-vbeln.
+      w_tradede_log-zdata_exec = sy-datum.
+      w_tradede_log-zhora_exec = sy-uzeit.
+      w_tradede_log-znr_msg    = w_tradede_log-znr_msg + 1.
+      w_tradede_log-zmensagem  = 'Inicio do processamento'.
+      APPEND w_tradede_log TO t_tradede_log.
+
+*---------------------------------------------------------------------*
+* Chama Função Para preencher dados de Invoice                        *
+*---------------------------------------------------------------------*
+
+      v_objkey = w_vbrk-vbeln.
+      CLEAR: w_cabec, v_form_name, t_item[], t_item.
+      CALL FUNCTION 'ZFSD_BUSCA_DADOS_INVOICE'
+        EXPORTING
+          i_vbeln     = v_objkey
+          i_form_name = c_formane
+          i_erdat     = i_erdat
+          i_erdat_fim = i_erdat_fim
+        IMPORTING
+          wa_cabec    = w_cabec
+          e_form_name = v_form_name
+        TABLES
+          gt_item     = t_item.
+
+      CLEAR: w_cabec-erdat, w_cabec-erdat_fim.
+
+      w_cabec-erdat     = l_data_i.
+      w_cabec-erdat_fim = l_data_f.
+
+      CLEAR w_return.
+      FREE w_return-otfdata[].
+      CALL FUNCTION v_form_name
+        EXPORTING
+          control_parameters = w_ctrlop
+          output_options     = w_compop
+          user_settings      = 'X'
+          gt_item            = t_item
+          wa_cabec           = w_cabec
+        IMPORTING
+          job_output_info    = w_return
+        EXCEPTIONS
+          formatting_error   = 1
+          internal_error     = 2
+          send_error         = 3
+          user_canceled      = 4
+          OTHERS             = 5.
+      IF sy-subrc NE 0.
+        CLEAR w_retorno.
+        w_retorno-type    = sy-abcde+4(1). " 'E'
+        w_retorno-number  = w_retorno-number + 1.
+
+        CONCATENATE  c_msg_e_1
+                     v_objkey
+                     c_msg_e_pdf"'Não foi possível montar Arquivo PDF.'
+                     INTO w_retorno-message SEPARATED BY space.
+        APPEND w_retorno TO t_return.
+
+      ELSE.
+
+*---------------------------------------------------------------------*
+* Convertendo PDF                                                     *
+*---------------------------------------------------------------------*
+        CLEAR: t_otf[], t_otf, t_tline[], t_tline.
+        t_otf[] = w_return-otfdata[].
+        CALL FUNCTION 'CONVERT_OTF'
+          EXPORTING
+            format                = 'PDF'
+            max_linewidth         = 132
+          IMPORTING
+            bin_filesize          = v_len_in
+          TABLES
+            otf                   = t_otf[]
+            lines                 = t_tline[]
+          EXCEPTIONS
+            err_max_linewidth     = 1
+            err_format            = 2
+            err_conv_not_possible = 3
+            err_bad_otf           = 4
+            OTHERS                = 5.
+        IF sy-subrc <> 0.
+          CLEAR w_retorno.
+          w_retorno-type    = sy-abcde+4(1). " 'E'
+          w_retorno-number  = w_retorno-number + 1.
+          CONCATENATE c_msg_e_1
+                      v_objkey
+                      c_msg_e_pdf "'Não foi possível montar Arquivo PDF.'
+                      INTO w_retorno-message SEPARATED BY space.
+          APPEND w_retorno TO t_return.
+        ENDIF.
+
+*---------------------------------------------------------------------*
+* Conversão para Binário                                              *
+*---------------------------------------------------------------------*
+        CLEAR w_buffer.
+        LOOP AT t_tline.
+          TRANSLATE t_tline USING '~'.
+          CONCATENATE w_buffer t_tline INTO w_buffer.
+        ENDLOOP.
+        TRANSLATE w_buffer USING '~'.
+        DO.
+          w_record = w_buffer.
+          APPEND w_record TO t_record.
+          SHIFT w_buffer LEFT BY 255 PLACES.
+          IF w_buffer IS INITIAL.
+            EXIT.
+          ENDIF.
+        ENDDO.
+
+*---------------------------------------------------------------------*
+* Montando corpo do Email enviado                                     *
+*---------------------------------------------------------------------*
+        PERFORM zf_monta_txt_email.
+*---------------------------------------------------------------------*
+* Montando corpo do Email enviado                                     *
+*---------------------------------------------------------------------*
+        LOOP AT t_record
+           INTO DATA(w_registro).
+          w_objbin = w_registro.
+          APPEND w_objbin TO t_objbin.
+          CLEAR w_objbin.
+        ENDLOOP.
+
+        TRY.
+
+            CALL METHOD cl_bcs_convert=>bin_to_solix
+              EXPORTING
+                it_soli  = t_objbin
+              IMPORTING
+                et_solix = t_anexo.
+
+          CATCH cx_os_object_state.
+
+        ENDTRY.
+
+        IF NOT t_anexo[] IS INITIAL.
+*---------------------------------------------------------------------*
+* Inserindo Detalhes de Operação Trade                                *
+*---------------------------------------------------------------------*
+          SELECT SINGLE low INTO v_path
+              FROM tvarvc CLIENT SPECIFIED
+              WHERE mandt EQ syst-mandt
+                AND name  EQ c_dir.
+
+          IF sy-subrc IS INITIAL.
+            SELECT SINGLE vgbel FROM vbrp INTO v_ordem
+              WHERE vbeln = w_vbrk-vbeln.
+          ENDIF.
+
+          IF syst-subrc IS INITIAL.
+
+            SELECT sap_object
+                   object_id
+                   archiv_id
+                   arc_doc_id
+              INTO TABLE t_toa01
+                FROM toa01
+                WHERE sap_object = 'BUS2032'
+                  AND object_id = v_ordem
+                  AND archiv_id = 'Z1'.
+
+            IF sy-subrc IS INITIAL.
+              SELECT arc_doc_id
+                     filename
+                INTO TABLE t_toaat
+                  FROM toaat
+                    FOR ALL ENTRIES IN t_toa01
+                      WHERE arc_doc_id = t_toa01-arc_doc_id.
+
+              IF sy-subrc IS INITIAL.
+                SORT t_toaat BY arc_doc_id.
+              ENDIF.
+            ENDIF.
+
+*---------------------------------------------------------------------*
+* Arquivos Excel                                                      *
+*---------------------------------------------------------------------*
+*       NDF
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                       USING v_ordem c_ndf.
+
+*       IRS
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                      USING  v_ordem c_irs.
+
+*       NDO
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                      USING v_ordem c_ndo.
+
+*       TIIE
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                      USING v_ordem c_tiie.
+*       XCCY
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                      USING v_ordem c_xccy.
+
+*       FWD
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                      USING v_ordem c_fwd.
+
+*       REG
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                      USING v_ordem c_reg.
+
+*       EQU
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                      USING v_ordem c_equ.
+
+*       OPT
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                      USING v_ordem c_opt.
+
+*       EQD
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                      USING v_ordem c_eqd.
+
+*       STN
+            CLEAR: t_data, t_data[].
+            PERFORM zf_trade_details  TABLES t_return
+                                             t_data
+                                      USING v_ordem c_stn.
+          ENDIF.
+        ELSE.
+          CLEAR w_retorno.
+          w_retorno-type    = sy-abcde+4(1). " 'E'
+          CONCATENATE c_msg_e_1
+                      v_objkey
+                      c_msg_e_pdf "'Não foi possível montar Arquivo PDF.'
+                      INTO w_retorno-message SEPARATED BY space.
+          APPEND w_retorno TO t_return.
+        ENDIF.
+*---------------------------------------------------------------------*
+* Processa apenas se existem arquivos enviados e sem erro             *
+*---------------------------------------------------------------------*
+
+        IF v_tabix EQ v_lines_t.
+          IF v_enviar IS NOT INITIAL.
+
+            SELECT * INTO TABLE t_kna1
+              FROM kna1 CLIENT SPECIFIED
+              FOR ALL ENTRIES IN t_vbpa
+              WHERE mandt EQ syst-mandt
+                AND kunnr EQ t_vbpa-kunnr.
+
+            IF syst-subrc IS INITIAL.
+              SELECT * INTO TABLE t_adr6
+                FROM adr6 CLIENT SPECIFIED
+                FOR ALL ENTRIES IN t_kna1
+                WHERE client     EQ t_kna1-mandt
+                  AND addrnumber EQ t_kna1-adrnr.
+
+              IF syst-subrc IS INITIAL.
+                SELECT * INTO TABLE t_adrt
+                  FROM adrt CLIENT SPECIFIED
+                  FOR ALL ENTRIES IN t_adr6
+                  WHERE client      EQ syst-mandt
+                    AND addrnumber  EQ t_adr6-addrnumber.
+
+                IF syst-subrc IS INITIAL.
+
+                  CLEAR: t_stvarv, t_stvarv[].
+                  SELECT  * INTO TABLE t_stvarv
+                    FROM tvarvc CLIENT SPECIFIED
+                    WHERE mandt EQ syst-mandt
+                      AND name  EQ c_produto.
+
+                  IF syst-subrc IS INITIAL.
+                    SORT t_vbrp   BY matnr.
+                    SORT t_stvarv BY low.
+
+                    DATA(t_item_aux) = t_item[].
+                    SORT t_item_aux BY arktx.
+                    DELETE ADJACENT DUPLICATES FROM t_item_aux COMPARING arktx.
+                    IF t_item_aux[] IS NOT INITIAL.
+                      LOOP AT t_item_aux ASSIGNING FIELD-SYMBOL(<fs_item>).
+                        LOOP AT t_adrt WHERE remark = <fs_item>-arktx.
+                          LOOP AT t_adr6 WHERE
+                            addrnumber = t_adrt-addrnumber
+                        AND consnumber = t_adrt-consnumber.
+
+                            IF t_adr6-flg_nouse IS INITIAL.
+                              CLEAR v_email.
+                              v_email = t_adr6-smtp_addr.
+                              t_reclist-receiver = v_email.
+                              t_reclist-rec_type = c_u.
+                              APPEND t_reclist.
+                              CLEAR t_reclist.
+                            ENDIF.
+                          ENDLOOP.
+                        ENDLOOP.
+                      ENDLOOP.
+                    ENDIF.
+                  ENDIF.
+
+*---------------------------------------------------------------------*
+* Caso não exista cadastro mandar o primeiro da lista                 *
+*---------------------------------------------------------------------*
+
+                  IF t_reclist[] IS INITIAL.
+                    LOOP AT t_adrt.
+                      LOOP AT t_adr6 WHERE
+                        addrnumber = t_adrt-addrnumber.
+
+                        IF t_adr6-flg_nouse IS INITIAL.
+                          CLEAR v_email.
+                          v_email = t_adr6-smtp_addr.
+                          t_reclist-receiver = v_email.
+                          t_reclist-rec_type = c_u.
+                          APPEND t_reclist.
+                          CLEAR t_reclist.
+                        ENDIF.
+                        EXIT.
+                      ENDLOOP.
+                      EXIT.
+                    ENDLOOP.
+                  ENDIF.
+
+                  CLEAR: t_stvarv, t_stvarv[].
+                  SELECT  * INTO TABLE t_stvarv
+                    FROM tvarvc CLIENT SPECIFIED
+                    WHERE mandt EQ syst-mandt
+                      AND name  EQ c_email.
+
+                  IF syst-subrc IS INITIAL.
+                    LOOP AT t_stvarv.
+                      CLEAR: v_email, v_sender.
+                      v_sender = t_stvarv-low.
+                      v_email = t_stvarv-low.
+                      t_reclist-receiver = v_email.
+                      t_reclist-rec_type = c_u.
+                      t_reclist-copy = c_x.
+                      APPEND t_reclist.
+                      CLEAR t_reclist.
+                    ENDLOOP.
+                  ENDIF.
+
+                  CLEAR: l_addr, l_recipient, l_document,l_result.
+
+                  l_document = cl_bcs=>create_persistent( ).
+                  CALL METHOD l_document->set_document( l_email ).
+
+                  LOOP AT t_reclist ASSIGNING FIELD-SYMBOL(<f_email>).
+
+                    "Cria Destinatários
+                    l_addr = <f_email>.
+                    TRY.
+                        l_recipient = cl_cam_address_bcs=>create_internet_address( l_addr ).
+
+                        IF l_document IS BOUND.
+
+                          "Adiciona os destinatários do email
+                          CALL METHOD l_document->add_recipient
+                            EXPORTING
+                              i_recipient = l_recipient
+                              i_express   = abap_true.
+                        ENDIF.
+                      CATCH cx_address_bcs.
+                        EXIT.
+                    ENDTRY.
+
+                  ENDLOOP.
+
+*                 Insere Anexos
+                  CLEAR w_anexo_aux.
+                  LOOP AT t_anexo_aux
+                      INTO w_anexo_aux.
+
+                    CALL METHOD l_email->add_attachment
+                      EXPORTING
+                        i_attachment_type    = w_anexo_aux-type
+                        i_attachment_subject = w_anexo_aux-subject
+                        i_att_content_hex    = w_anexo_aux-content.
+
+                  ENDLOOP.
+
+                  TRY .
+                      "Envia o email
+                      CALL METHOD l_document->send(
+                        EXPORTING
+                          i_with_error_screen = abap_false
+                        RECEIVING
+                          result              = l_result ).
+                    CATCH cx_address_bcs..
+                      EXIT.
+                  ENDTRY.
+
+                  IF sy-subrc EQ 0.
+                    COMMIT WORK.
+                  ELSE.
+                    ROLLBACK WORK.
+                  ENDIF.
+                ELSE.
+                  CLEAR w_retorno.
+                  w_retorno-type    = sy-abcde+4(1). " 'E'
+                  CONCATENATE c_msg_e_1
+                              v_objkey
+                              c_msg_e_stvarv "'não está cadastrado na STVARV'
+                              INTO w_retorno-message SEPARATED BY space.
+                  APPEND w_retorno TO t_return.
+                ENDIF.
+              ELSE.
+                CLEAR w_retorno.
+                w_retorno-type    = sy-abcde+4(1). " 'E'
+                CONCATENATE c_msg_e_1
+                            v_objkey
+                            c_msg_e_email"'endereço de e-mail está incorreto.'
+                            INTO w_retorno-message SEPARATED BY space.
+                APPEND w_retorno TO t_return.
+              ENDIF.
+            ELSE.
+              CLEAR w_retorno.
+              w_retorno-type    = sy-abcde+4(1). " 'E'
+              CONCATENATE c_msg_e_1
+                          v_objkey
+                          c_msg_e_cli"'o cliente está incorreto.'
+                          INTO w_retorno-message SEPARATED BY space.
+              APPEND w_retorno TO t_return.
+            ENDIF.
+
+            w_tradede_log-znr_msg = w_tradede_log-znr_msg + 1.
+            w_tradede_log-zmensagem = 'Processamento concluído - Cobranca'.
+            APPEND w_tradede_log TO t_tradede_log.
+            MODIFY zsdt_tradede_log FROM TABLE t_tradede_log.
+
+          ELSE.
+            CLEAR w_retorno.
+            w_retorno-type    = sy-abcde+4(1). " 'E'
+            CONCATENATE c_msg_e_1
+                        v_objkey
+                        c_msg_e_anexo
+                        INTO w_retorno-message
+                        SEPARATED BY space.
+
+            APPEND w_retorno TO t_return.
+
+            CLEAR w_retorno.
+            w_retorno-message = c_msg_e_anexo2.
+            APPEND w_retorno TO t_return.
+
+          ENDIF.
+        ELSE.
+          IF v_envia_email IS INITIAL.
+
+            CLEAR w_retorno.
+            w_retorno-type    = sy-abcde+4(1). " 'E'
+            CONCATENATE c_msg_e_1
+                        v_objkey
+                        c_msg_e_anexo
+                        INTO w_retorno-message
+                        SEPARATED BY space.
+
+            APPEND w_retorno TO t_return.
+
+            CLEAR w_retorno.
+            w_retorno-message = c_msg_e_anexo2.
+            APPEND w_retorno TO t_return.
+
+          ENDIF.
+
+          CLEAR v_envia_email.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+ENDFUNCTION.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZF_MONTA_TXT_EMAIL
+*&---------------------------------------------------------------------*
+FORM zf_monta_txt_email.
+
+  DATA: l_data TYPE char10,
+        l_tab  TYPE sy-tabix.
+
+* Monta a parte do TOPO do E-MAIL somente uma VEZ no processamento
+  IF v_tabix EQ 1.
+
+    CONCATENATE c_p text-010  w_cabec-name1 c_fechar_p INTO w_objtxt SEPARATED BY space."Dear Customer: <NameClient>
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    CONCATENATE c_br c_p text-018 text-019 c_fechar_p INTO w_objtxt SEPARATED BY space."Please, find attached all invoices that we have pending. If you already paid, please send us the swift so we can close the balance.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+*---------------------------------------------------------------------*
+* Montando Tabela HTML                                                *
+*---------------------------------------------------------------------*
+    w_objtxt = c_head.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = c_fechar_head.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = c_body.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = text-020. "'<table style="border:1px solid black;border-collapse:collapse;">'.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = c_tr.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = text-021. "'<th style="border:1px solid black;">Net due date</th>'.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = text-022. "'<th style="border:1px solid black;">Assignment</th>'.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = text-023. "'<th style="border:1px solid black;">Reference</th>'.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = text-024. "'<th style="border:1px solid black;">Client</th>'.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = text-025. "'<th style="border:1px solid black;">Amount in local currency</th>'.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = c_fechar_tr.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+
+  ENDIF.
+
+* Monta a parte do GRID do E-MAIL várias vezes de acordo com o LOOP.
+  w_objtxt = c_tr.
+  APPEND w_objtxt TO t_objtxt.
+  CLEAR w_objtxt.
+
+  READ TABLE t_cobr_aux INTO DATA(w_cobr_aux) WITH KEY vbeln_p = w_cabec-vbeln
+                                                                 BINARY SEARCH.
+
+  IF sy-subrc NE 0.
+    CLEAR w_cobr_aux.
+  ENDIF.
+
+  l_tab = sy-tabix.
+
+  CONCATENATE w_cobr_aux-zfbdt+6(2)
+              w_cobr_aux-zfbdt+4(2)
+              w_cobr_aux-zfbdt(4) INTO l_data SEPARATED BY c_separator.
+
+  CONCATENATE text-026 "'<td style="border:1px solid black;">'
+              l_data
+              c_fechar_td
+              text-027 "'<td style="border:1px solid black;">'
+              w_cobr_aux-zuonr
+              c_fechar_td
+              text-028 "'<td style="border:1px solid black;">'
+              w_cobr_aux-belnr_d
+              c_fechar_td
+              text-029 "'<td style="border:1px solid black;">'
+              w_cabec-name1
+              c_fechar_td INTO w_objtxt.
+
+  APPEND w_objtxt TO t_objtxt.
+  CLEAR w_objtxt.
+
+  CONCATENATE text-030 "'<td style="border:1px solid black;">'
+              w_cabec-total
+              c_fechar_td INTO w_objtxt.
+
+  APPEND w_objtxt TO t_objtxt.
+  CLEAR w_objtxt.
+
+  w_objtxt = c_fechar_tr.
+  APPEND w_objtxt TO t_objtxt.
+  CLEAR w_objtxt.
+
+
+* Monta o resto do E-MAIL Somente UMA VEZ no final do processamento.
+  IF v_tabix EQ v_lines_t.
+
+    w_objtxt = c_fechar_table.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    CONCATENATE c_p text-012 c_fechar_p INTO w_objtxt. "Thank you for your business
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    CONCATENATE c_p text-013 c_fechar_p INTO w_objtxt. "Sincerely,
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    CONCATENATE c_p text-014 c_fechar_p INTO w_objtxt. "XP Securities LLC
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = c_p.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    CLEAR: t_email_body, t_email_body[].
+    PERFORM zf_adiciona_aviso
+        USING c_disclaimer
+     CHANGING t_email_body.
+
+    LOOP AT t_email_body INTO w_email_body.
+      w_objtxt = w_email_body-line.
+      APPEND w_objtxt TO t_objtxt.
+      CLEAR w_email_body.
+    ENDLOOP.
+
+    w_objtxt = c_fechar_p.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    w_objtxt = c_fechar_body.
+    APPEND w_objtxt TO t_objtxt.
+    CLEAR w_objtxt.
+
+    "Conteúdo do email
+    IF NOT l_email IS BOUND.
+      CREATE OBJECT l_email.
+    ENDIF.
+
+    TRY.
+        l_email = cl_document_bcs=>create_document(
+            i_type       = 'HTM'
+            i_subject    = c_assunto
+            i_length     = '1000'
+            i_importance = '1'
+            i_text       = t_objtxt ).
+
+      CATCH cx_os_object_state.
+
+    ENDTRY.
+
+  ENDIF.
+
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZF_TRADE_DETAILS
+*&---------------------------------------------------------------------*
+FORM zf_trade_details TABLES t_return STRUCTURE bapiret2
+                             p_t_data STRUCTURE t_data
+                       USING p_ordem  TYPE vbak-vbeln
+                             p_trade  TYPE char10.
+
+  DATA: l_message(50).
+  DATA: l_low             TYPE rvari_val_255.
+  DATA: l_do_times_c(1)   TYPE c.
+  DATA: l_wait_secs_c(2)  TYPE c.
+  DATA: l_do_times_i      TYPE i.
+  DATA: l_wait_secs_i     TYPE i.
+  DATA: l_file_opened     TYPE abap_bool.
+  DATA: l_msg_v1          TYPE sy-msgv1.
+  DATA: l_dir_list        TYPE TABLE OF eps2fili.
+  DATA: l_file_mask       TYPE epsfilnam.
+  DATA: l_dir_name        TYPE eps2filnam.
+
+  DATA: l_archiv_doc_id TYPE sapb-sapadokid,
+        l_length        TYPE sapb-length,
+        l_length_i      TYPE i,
+        l_subject       TYPE sood-objdes.
+
+  DATA: t_archivobject    TYPE TABLE OF docs,
+        t_binarchivobject TYPE TABLE OF tbl1024,
+        w_binarchivobject TYPE tbl1024,
+        w_toaat           TYPE y_toaat.
+
+  CLEAR v_result_file.
+  CONCATENATE p_ordem p_trade INTO v_result_file.
+
+  w_tradede_log-znr_msg = w_tradede_log-znr_msg + 1.
+  CONCATENATE 'Busca arquivo - Cobranca: ' v_result_file INTO w_tradede_log-zmensagem.
+  APPEND w_tradede_log TO t_tradede_log.
+
+* Busca anexo na OV
+  LOOP AT t_toaat INTO w_toaat WHERE filename = v_result_file.
+    l_archiv_doc_id = w_toaat-arc_doc_id.
+    EXIT.
+  ENDLOOP.
+
+  IF l_archiv_doc_id IS NOT INITIAL.
+
+    w_tradede_log-znr_msg = w_tradede_log-znr_msg + 1.
+    CONCATENATE 'Arquivo encontrado - Cobranca: ' v_result_file INTO w_tradede_log-zmensagem.
+    APPEND w_tradede_log TO t_tradede_log.
+
+    REFRESH t_binarchivobject.
+    CALL FUNCTION 'ARCHIVOBJECT_GET_TABLE'
+      EXPORTING
+        archiv_id                = 'Z1'
+        document_type            = 'XLS'
+        archiv_doc_id            = l_archiv_doc_id
+        signature                = space
+      IMPORTING
+        binlength                = l_length
+      TABLES
+        archivobject             = t_archivobject
+        binarchivobject          = t_binarchivobject
+      EXCEPTIONS
+        error_archiv             = 1
+        error_communicationtable = 2
+        error_kernel             = 3
+        OTHERS                   = 4.
+
+    IF sy-subrc IS INITIAL.
+      l_length_i = l_length.
+*
+      CLEAR: w_buffer, t_record, t_record[], t_objbin[].
+
+      CALL FUNCTION 'SCMS_BINARY_TO_STRING'
+        EXPORTING
+          input_length = l_length_i
+        IMPORTING
+          text_buffer  = w_buffer
+        TABLES
+          binary_tab   = t_binarchivobject
+        EXCEPTIONS
+          failed       = 1
+          OTHERS       = 2.
+
+      IF sy-subrc IS INITIAL.
+
+        TRY.
+
+            CALL METHOD cl_bcs_convert=>string_to_solix
+              EXPORTING
+                iv_string = w_buffer
+              IMPORTING
+                et_solix  = t_anexo_xls.
+
+          CATCH cx_os_object_state.
+
+        ENDTRY.
+
+        CLEAR l_subject.
+
+        READ TABLE t_cobr_ord INTO DATA(w_cobranca) WITH KEY vbeln_p = w_vbrk-vbeln BINARY SEARCH.
+
+        IF sy-subrc EQ 0.
+          CONCATENATE w_cobranca-vbeln p_trade INTO l_subject.
+        ENDIF.
+
+        IF NOT t_anexo_xls[] IS INITIAL.
+*         Processa somente uma vez o anexo de INVOICE POR Faturamento!
+          IF NOT l_email IS BOUND.
+            CREATE OBJECT l_email.
+          ENDIF.
+          "Anexa PDF
+
+          CLEAR w_anexo_aux.
+          w_anexo_aux-type = c_pdf.
+          w_anexo_aux-subject = c_subject.
+          w_anexo_aux-content =  t_anexo.
+          APPEND w_anexo_aux TO t_anexo_aux.
+
+          CLEAR w_anexo_aux.
+          w_anexo_aux-type = c_xls.
+          w_anexo_aux-subject = l_subject.
+          w_anexo_aux-content =  t_anexo_xls.
+          APPEND w_anexo_aux TO t_anexo_aux.
+
+          v_envia_email = abap_true.
+          v_enviar      = abap_true.
+
+        ELSE.
+          CLEAR w_retorno.
+          w_retorno-type    = sy-abcde+4(1). " 'E'
+          CONCATENATE c_msg_e_1
+                      v_objkey
+                      c_msg_e_pdf INTO w_retorno-message SEPARATED BY space.
+          APPEND w_retorno TO t_return.
+        ENDIF.
+      ELSE.
+        CLEAR w_retorno.
+        w_retorno-type    = sy-abcde+4(1). " 'E'
+        CONCATENATE c_msg_e_1
+                    v_objkey
+                    c_msg_e_xls
+                    INTO w_retorno-message SEPARATED BY space.
+
+        APPEND w_retorno TO t_return.
+      ENDIF.
+    ELSE.
+      EXIT.
+    ENDIF.
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_ADICIONA_AVISO
+*&---------------------------------------------------------------------*
+FORM zf_adiciona_aviso USING    p_nome_texto TYPE tdobname
+                    CHANGING    p_email_body LIKE t_email_body.
+
+  "Tabelas Locais
+  DATA: t_aviso_legal LIKE t_lines.
+
+  "Estruturas Locais
+  DATA: w_line  TYPE tline,
+        w_aviso TYPE tline.
+
+  "Variáveis locais
+  DATA: l_tdline  TYPE tdline,
+        l_length  TYPE i,
+        l_link_xp TYPE string.
+
+  IF p_nome_texto = c_aviso_legal.
+
+    "Importante:
+    CONCATENATE c_p text-016 c_fechar_p c_br INTO w_line-tdline.
+
+  ELSEIF p_nome_texto = c_disclaimer.
+
+    "Important:
+    CONCATENATE c_p text-017 c_fechar_p c_br INTO w_line-tdline.
+
+  ENDIF.
+
+  APPEND w_line TO p_email_body.
+  CLEAR w_line.
+
+  "Recupera Texto Aviso Legal
+  PERFORM f_verifica_texto_aprovado
+      USING p_nome_texto
+   CHANGING t_aviso_legal.
+
+  LOOP AT t_aviso_legal INTO w_aviso.
+    w_line-tdline = w_aviso-tdline.
+    APPEND w_line TO p_email_body.
+    CLEAR w_line.
+  ENDLOOP.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_VERIFICA_TEXTO_APROVADO
+*&---------------------------------------------------------------------*
+FORM f_verifica_texto_aprovado
+ USING    p_name_text TYPE tdobname
+ CHANGING    p_lines     LIKE t_lines.
+
+  FREE p_lines.
+  CALL FUNCTION 'READ_TEXT'
+    EXPORTING
+      id                      = c_id_so10
+      language                = sy-langu
+      name                    = p_name_text
+      object                  = c_objeto_so10
+    TABLES
+      lines                   = p_lines
+    EXCEPTIONS
+      id                      = 1
+      language                = 2
+      name                    = 3
+      not_found               = 4
+      object                  = 5
+      reference_check         = 6
+      wrong_access_to_archive = 7
+      OTHERS                  = 8.
+  IF sy-subrc NE 0.
+    FREE p_lines.
+  ENDIF.
+ENDFORM.
+FORM f_limpa_dados.
+  FREE: t_cobr_aux,
+        t_cabec,
+        t_item,
+        t_vbrk,
+        t_tradede_log,
+        t_toa01,
+        t_toaat,
+        t_lines,
+        t_email_body,
+        t_tline,
+        t_otf,
+        t_vbpa,
+        t_kna1,
+        t_vbrp,
+        t_adr6,
+        t_adrt,
+        t_stvarv,
+        t_record,
+        t_objpack,
+        t_objtxt,
+        t_objbin,
+        t_objbinex,
+        t_reclist,
+        t_anexo.
+
+  CLEAR: l_email      ,
+         v_return_code,
+         v_form_name  ,
+         v_len_in     ,
+         v_len_out    ,
+         v_len_outn   ,
+         v_lines_txt  ,
+         v_lines_bin  ,
+         v_lines_bin2 ,
+         v_email      ,
+         v_sender     ,
+         v_lines      ,
+         v_cont       ,
+         v_field(50)  ,
+         v_total      ,
+         v_utxj       ,
+         v_zr00       ,
+         v_jrxx       ,
+         v_langu      ,
+         v_name       ,
+         v_delimiter  ,
+         v_ordem      ,
+         v_path       ,
+         v_result_file,
+         v_file_error,
+         v_file_found,
+         v_objkey,
+         v_n,
+         w_ctrlop     ,
+         w_compop     ,
+         w_return     ,
+         w_doc_chng   ,
+         w_data       ,
+         w_buffer     ,
+         w_vbrk       ,
+         w_bukrs      ,
+         w_t001w      ,
+         w_adrc       ,
+         w_adr6       ,
+         w_kna1       ,
+         w_cabec      ,
+         w_item       ,
+         w_trtext     ,
+         w_tcurc      ,
+         w_varv       ,
+         w_email_body ,
+         w_tradede_log,
+         w_buffer2    ,
+         w_record     ,
+         w_objbin     ,
+         w_objtxt     .
+ENDFORM.
